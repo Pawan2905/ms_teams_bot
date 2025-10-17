@@ -53,17 +53,18 @@ class JiraManager:
         """Format Jira issue data into a dictionary"""
         return {
             'key': issue.key,
-            'summary': issue.fields.summary,
-            'description': issue.fields.description,
+            'summary': issue.fields.summary or '',
+            'description': issue.fields.description or 'No description provided',
             'status': issue.fields.status.name,
             'created': issue.fields.created,
             'updated': issue.fields.updated,
             'reporter': getattr(issue.fields.reporter, 'displayName', None),
-            'assignee': getattr(issue.fields.assignee, 'displayName', None) if hasattr(issue.fields, 'assignee') else None,
+            'assignee': getattr(issue.fields.assignee, 'displayName', None) if hasattr(issue.fields, 'assignee') and issue.fields.assignee else None,
             'url': f"{self.client.server_url}/browse/{issue.key}",
             'type': issue.fields.issuetype.name,
             'project': issue.fields.project.key,
-            'labels': getattr(issue.fields, 'labels', [])
+            'labels': getattr(issue.fields, 'labels', []),
+            'priority': getattr(issue.fields, 'priority', None) and issue.fields.priority.name or 'None'
         }
     
     def get_issues_for_embedding(self, project_key: str, days_back: int = 30) -> List[Dict[str, Any]]:
@@ -74,13 +75,18 @@ class JiraManager:
         documents = []
         for issue in issues:
             content = f"""
-            Jira Issue: {issue['key']}
-            Summary: {issue['summary']}
-            Status: {issue['status']}
-            Description: {issue['description']}
-            Type: {issue['type']}
-            Created: {issue['created']}
-            Updated: {issue['updated']}
+Jira Issue: {issue['key']}
+Summary: {issue['summary']}
+Status: {issue['status']}
+Priority: {issue.get('priority', 'None')}
+Type: {issue['type']}
+Description: {issue['description']}
+Assignee: {issue.get('assignee', 'Unassigned')}
+Reporter: {issue.get('reporter', 'Unknown')}
+Created: {issue['created']}
+Updated: {issue['updated']}
+Labels: {', '.join(issue.get('labels', []))}
+URL: {issue['url']}
             """.strip()
             
             documents.append({
@@ -90,6 +96,8 @@ class JiraManager:
                 'metadata': {
                     'key': issue['key'],
                     'project': issue['project'],
+                    'status': issue['status'],
+                    'priority': issue.get('priority', 'None'),
                     'updated': issue['updated']
                 }
             })

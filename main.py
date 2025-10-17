@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 import logging
 import uvicorn
 import os
+import asyncio
 
 # Import our modules
 from config import settings
@@ -12,7 +13,6 @@ from vector_store import VectorStore
 from jira_integration import JiraManager
 from confluence_integration import ConfluenceManager
 from rag_agent import RAGAgent
-from update_vector_store import update_jira_documents, update_confluence_documents
 
 # Configure logging
 logging.basicConfig(
@@ -52,11 +52,6 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[Dict[str, Any]]
     action: Optional[Dict[str, Any]] = None
-class UpdateRequest(BaseModel):
-    jira_project_key: Optional[str] = None
-    confluence_space_key: Optional[str] = None
-    days_back: Optional[int] = None
-
 
 class JiraCreateRequest(BaseModel):
     project_key: str
@@ -70,6 +65,31 @@ class JiraCreateRequest(BaseModel):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+@app.get("/status")
+async def get_status():
+    """Get application status including vector store information"""
+    try:
+        doc_count = vector_store.collection.count()
+        return {
+            "status": "running",
+            "vector_store": {
+                "document_count": doc_count,
+                "ready": doc_count > 0
+            },
+            "integrations": {
+                "jira_configured": bool(settings.jira_server and settings.jira_api_token),
+                "confluence_configured": bool(settings.confluence_server and settings.confluence_api_token),
+                "default_jira_project": settings.default_jira_project_key or None,
+                "default_confluence_space": settings.default_confluence_space_key or None
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting status: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
@@ -125,34 +145,6 @@ async def process_query(request: QueryRequest):
                 sources=response['sources'],
                 action=action
             )
-@app.post("/admin/update")
-async def admin_update(request: UpdateRequest):
-    """Trigger a background update of the vector store for Jira and Confluence."""
-    try:
-        jira_project = request.jira_project_key or settings.default_jira_project_key
-        conf_space = request.confluence_space_key or settings.default_confluence_space_key
-        days_back = request.days_back or settings.refresh_days_back
-
-        tasks = []
-        if jira_project:
-            tasks.append(update_jira_documents(vector_store, jira_project, days_back))
-        if conf_space:
-            tasks.append(update_confluence_documents(vector_store, conf_space))
-
-        if not tasks:
-            raise HTTPException(status_code=400, detail="No project/space configured to update")
-
-        await asyncio.gather(*tasks)
-        return {"status": "success", "updated": {
-            "jira_project": jira_project if jira_project else None,
-            "confluence_space": conf_space if conf_space else None
-        }}
-    except Exception as e:
-        logger.error(f"Error during admin update: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(
@@ -214,39 +206,28 @@ async def search_confluence(query: str, limit: int = 10):
             detail=str(e)
         )
 
-# Background task to update the vector store
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the application and schedule periodic updates."""
-    logger.info("Starting up Agentic RAG Assistant...")
+    """Initialize the application on startup."""
+    logger.info("=" * 60)
+    logger.info("Starting Agentic RAG Assistant...")
+    logger.info("=" * 60)
+    
+    # Check vector store status
     try:
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from apscheduler.triggers.cron import CronTrigger
-
-        scheduler = AsyncIOScheduler()
-
-        # Parse cron string from settings.refresh_schedule_cron
-        cron_expr = settings.refresh_schedule_cron.strip().split()
-        if len(cron_expr) == 5:
-            trigger = CronTrigger(
-                minute=cron_expr[0], hour=cron_expr[1], day=cron_expr[2], month=cron_expr[3], day_of_week=cron_expr[4]
-            )
-            async def scheduled_job():
-                tasks = []
-                if settings.default_jira_project_key:
-                    tasks.append(update_jira_documents(vector_store, settings.default_jira_project_key, settings.refresh_days_back))
-                if settings.default_confluence_space_key:
-                    tasks.append(update_confluence_documents(vector_store, settings.default_confluence_space_key))
-                if tasks:
-                    await asyncio.gather(*tasks)
-
-            scheduler.add_job(scheduled_job, trigger, id="daily_refresh", replace_existing=True)
-            scheduler.start()
-            logger.info("Scheduled daily refresh job")
+        doc_count = vector_store.collection.count()
+        logger.info(f"Vector store initialized with {doc_count} documents")
+        
+        if doc_count == 0:
+            logger.warning("Vector store is empty! Run 'python ingest_data.py' to populate it.")
         else:
-            logger.warning("REFRESH_SCHEDULE_CRON is not a 5-part cron expression; skipping scheduler setup")
+            logger.info(f"✅ Ready to serve queries")
+            
     except Exception as e:
-        logger.warning(f"Scheduler setup skipped: {e}")
+        logger.error(f"Error checking vector store: {str(e)}")
+    
+    logger.info("API Documentation available at: http://localhost:8000/docs")
+    logger.info("=" * 60)
 
 if __name__ == "__main__":
     uvicorn.run(
