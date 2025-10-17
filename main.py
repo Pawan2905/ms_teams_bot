@@ -12,6 +12,7 @@ from vector_store import VectorStore
 from jira_integration import JiraManager
 from confluence_integration import ConfluenceManager
 from rag_agent import RAGAgent
+from update_vector_store import update_jira_documents, update_confluence_documents
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +52,11 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[Dict[str, Any]]
     action: Optional[Dict[str, Any]] = None
+class UpdateRequest(BaseModel):
+    jira_project_key: Optional[str] = None
+    confluence_space_key: Optional[str] = None
+    days_back: Optional[int] = None
+
 
 class JiraCreateRequest(BaseModel):
     project_key: str
@@ -74,13 +80,43 @@ async def process_query(request: QueryRequest):
         
         # Handle different actions
         if action['action'] == 'create_issue':
-            # For demo purposes, we'll just return a message about creating an issue
-            # In a real app, you would call jira_manager.create_issue() here
-            return QueryResponse(
-                answer=f"I can help you create a Jira issue. Please provide the following details: {action['parameters']}",
-                sources=[],
-                action=action
+            params = action.get('parameters', {}) or {}
+            project_key = params.get('project_key') or settings.default_jira_project_key
+            summary = params.get('summary')
+            description = params.get('description') or ""
+            issue_type = params.get('issue_type') or "Task"
+
+            missing = []
+            if not project_key:
+                missing.append('project_key')
+            if not summary:
+                missing.append('summary')
+
+            if missing:
+                return QueryResponse(
+                    answer=f"To create a Jira issue, please provide: {', '.join(missing)}.",
+                    sources=[],
+                    action={"action": "create_issue", "parameters": {"required_fields": missing}}
+                )
+
+            issue = jira_manager.create_issue(
+                project_key=project_key,
+                summary=summary,
+                description=description,
+                issue_type=issue_type,
             )
+            if issue:
+                return QueryResponse(
+                    answer=f"Created Jira issue {issue['key']} ({issue['url']}).",
+                    sources=[],
+                    action={"action": "create_issue", "parameters": {"issue": issue}}
+                )
+            else:
+                return QueryResponse(
+                    answer="Failed to create Jira issue. Please verify project key and permissions.",
+                    sources=[],
+                    action={"action": "create_issue"}
+                )
         else:
             # Default to search action
             response = rag_agent.generate_response(request.query, request.context)
@@ -89,6 +125,34 @@ async def process_query(request: QueryRequest):
                 sources=response['sources'],
                 action=action
             )
+@app.post("/admin/update")
+async def admin_update(request: UpdateRequest):
+    """Trigger a background update of the vector store for Jira and Confluence."""
+    try:
+        jira_project = request.jira_project_key or settings.default_jira_project_key
+        conf_space = request.confluence_space_key or settings.default_confluence_space_key
+        days_back = request.days_back or settings.refresh_days_back
+
+        tasks = []
+        if jira_project:
+            tasks.append(update_jira_documents(vector_store, jira_project, days_back))
+        if conf_space:
+            tasks.append(update_confluence_documents(vector_store, conf_space))
+
+        if not tasks:
+            raise HTTPException(status_code=400, detail="No project/space configured to update")
+
+        await asyncio.gather(*tasks)
+        return {"status": "success", "updated": {
+            "jira_project": jira_project if jira_project else None,
+            "confluence_space": conf_space if conf_space else None
+        }}
+    except Exception as e:
+        logger.error(f"Error during admin update: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(
@@ -153,12 +217,36 @@ async def search_confluence(query: str, limit: int = 10):
 # Background task to update the vector store
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the application"""
+    """Initialize the application and schedule periodic updates."""
     logger.info("Starting up Agentic RAG Assistant...")
-    
-    # You can add initialization code here, such as loading data into the vector store
-    # For example:
-    # await update_vector_store()
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = AsyncIOScheduler()
+
+        # Parse cron string from settings.refresh_schedule_cron
+        cron_expr = settings.refresh_schedule_cron.strip().split()
+        if len(cron_expr) == 5:
+            trigger = CronTrigger(
+                minute=cron_expr[0], hour=cron_expr[1], day=cron_expr[2], month=cron_expr[3], day_of_week=cron_expr[4]
+            )
+            async def scheduled_job():
+                tasks = []
+                if settings.default_jira_project_key:
+                    tasks.append(update_jira_documents(vector_store, settings.default_jira_project_key, settings.refresh_days_back))
+                if settings.default_confluence_space_key:
+                    tasks.append(update_confluence_documents(vector_store, settings.default_confluence_space_key))
+                if tasks:
+                    await asyncio.gather(*tasks)
+
+            scheduler.add_job(scheduled_job, trigger, id="daily_refresh", replace_existing=True)
+            scheduler.start()
+            logger.info("Scheduled daily refresh job")
+        else:
+            logger.warning("REFRESH_SCHEDULE_CRON is not a 5-part cron expression; skipping scheduler setup")
+    except Exception as e:
+        logger.warning(f"Scheduler setup skipped: {e}")
 
 if __name__ == "__main__":
     uvicorn.run(

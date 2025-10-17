@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Application Settings
     chroma_db_path: str = os.getenv("CHROMA_DB_PATH", "./chroma_db")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    # Default data sources and schedule
+    default_jira_project_key: str = os.getenv("DEFAULT_JIRA_PROJECT_KEY", "")
+    default_confluence_space_key: str = os.getenv("DEFAULT_CONFLUENCE_SPACE_KEY", "")
+    refresh_schedule_cron: str = os.getenv("REFRESH_SCHEDULE_CRON", "0 2 * * *")  # daily at 02:00
+    refresh_days_back: int = int(os.getenv("REFRESH_DAYS_BACK", "7"))
     
     class Config:
         env_file = ".env"

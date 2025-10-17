@@ -57,6 +57,12 @@ JIRA_API_TOKEN=your_jira_api_token
 CONFLUENCE_SERVER=your_confluence_server_url
 CONFLUENCE_EMAIL=your_confluence_email
 CONFLUENCE_API_TOKEN=your_confluence_api_token
+
+# Defaults and Scheduling
+DEFAULT_JIRA_PROJECT_KEY=ABC
+DEFAULT_CONFLUENCE_SPACE_KEY=~john.doe
+REFRESH_DAYS_BACK=7
+REFRESH_SCHEDULE_CRON="0 2 * * *"  # daily at 02:00
 ```
 
 ## Running the Application
@@ -78,7 +84,19 @@ To update the vector store with the latest data from Jira and Confluence, run:
 python update_vector_store.py
 ```
 
-You can schedule this to run daily using a cron job or Windows Task Scheduler.
+You can also trigger an update via API:
+
+```bash
+curl -X POST 'http://localhost:8000/admin/update' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jira_project_key": "ABC",
+    "confluence_space_key": "~john.doe",
+    "days_back": 14
+  }'
+```
+
+The app includes a daily scheduler governed by `REFRESH_SCHEDULE_CRON`.
 
 ## API Endpoints
 
@@ -86,6 +104,7 @@ You can schedule this to run daily using a cron job or Windows Task Scheduler.
 - `POST /jira/create-issue` - Create a new Jira issue
 - `GET /jira/search` - Search Jira issues
 - `GET /confluence/search` - Search Confluence pages
+- `POST /admin/update` - Trigger a knowledge update on demand
 - `GET /health` - Health check endpoint
 
 ## Example Usage
@@ -96,6 +115,14 @@ curl -X 'POST' \
   'http://localhost:8000/query' \
   -H 'Content-Type: application/json' \
   -d '{"query": "What are the recent high priority issues in Jira?"}'
+### Ask to create a Jira task in natural language:
+```bash
+curl -X 'POST' \
+  'http://localhost:8000/query' \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "Create a Jira task in project ABC: Investigate login failure"}'
+```
+
 ```
 
 ### Create a Jira issue:

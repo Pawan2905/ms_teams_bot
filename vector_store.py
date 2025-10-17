@@ -42,18 +42,36 @@ class VectorStore:
             raise
     
     def add_documents(self, documents: List[Dict[str, Any]]) -> None:
-        """Add documents to the vector store"""
+        """Add or upsert documents to the vector store.
+        Each input doc should include: content, source, type, metadata (dict).
+        We store stable IDs using the source value to support idempotent upserts.
+        """
         if not documents:
             return
-            
-        texts = [doc["content"] for doc in documents]
-        metadatas = [{"source": doc["source"], "type": doc["type"]} for doc in documents]
-        ids = [f"{doc['type']}_{i}" for i, doc in enumerate(documents)]
-        
-        # Generate embeddings
+
+        texts: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        ids: List[str] = []
+
+        for doc in documents:
+            source: str = doc.get("source")
+            doc_type: str = doc.get("type")
+            content: str = doc.get("content", "")
+            extra_meta: Dict[str, Any] = doc.get("metadata", {})
+
+            # Build stable ID based on unique source
+            stable_id = f"{doc_type}:{source}"
+
+            ids.append(stable_id)
+            texts.append(content)
+            metadatas.append({
+                "source": source,
+                "type": doc_type,
+                **{f"meta_{k}": v for k, v in extra_meta.items()}
+            })
+
         embeddings = self.get_embeddings(texts)
-        
-        # Add to collection
+
         self.collection.upsert(
             ids=ids,
             embeddings=embeddings,
@@ -75,15 +93,35 @@ class VectorStore:
         # Format results
         documents = []
         for i in range(len(results['ids'][0])):
+            meta = results['metadatas'][0][i]
+            # Reconstruct original metadata dict from flattened meta_* keys
+            reconstructed_meta = {
+                k.replace('meta_', ''): v for k, v in meta.items() if k.startswith('meta_')
+            }
             doc = {
                 'content': results['documents'][0][i],
-                'metadata': results['metadatas'][0][i],
+                'metadata': {
+                    'source': meta.get('source'),
+                    'type': meta.get('type'),
+                    **reconstructed_meta
+                },
                 'distance': results['distances'][0][i]
             }
             documents.append(doc)
             
         return documents
     
-    def delete_by_metadata(self, metadata_filter: Dict[str, str]) -> None:
-        """Delete documents matching the metadata filter"""
+    def delete_by_metadata(self, metadata_filter: Dict[str, Any]) -> None:
+        """Delete documents matching the metadata filter (supports type/source/meta_*)."""
         self.collection.delete(where=metadata_filter)
+
+    def delete_by_source_prefix(self, prefix: str) -> None:
+        """Delete documents whose IDs start with the given prefix (e.g., 'jira_issue:' or 'confluence_page:')."""
+        # Chroma supports where_document/where, but ID prefix deletion requires filtering metadatas or listing IDs.
+        # We approximate using type filter when prefix maps to a type.
+        if prefix.endswith(":"):
+            type_name = prefix[:-1].split(":")[-1]
+            try:
+                self.collection.delete(where={"type": type_name})
+            except Exception:
+                pass

@@ -16,15 +16,31 @@ class ConfluenceManager:
         )
     
     def search_content(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Search for content in Confluence"""
+        """Search for content in Confluence using CQL text search."""
         try:
-            results = self.client.get_all_pages_from_space(
-                space='~' + settings.confluence_email.split('@')[0],
+            # Build a CQL that searches pages by text relevance and sorts by last modified
+            cql = f'type = page AND text ~ "{query}" ORDER BY lastmodified DESC'
+
+            cql_result = self.client.cql(
+                cql=cql,
                 limit=limit,
-                content_type='page',
-                expand='body.storage,version,space'
+                expand='content.space,content.version'
             )
-            return [self._format_page(page) for page in results]
+
+            pages: List[Dict[str, Any]] = []
+            for result in cql_result.get('results', []):
+                content = result.get('content', {})
+                page_id = content.get('id')
+                if not page_id:
+                    continue
+                # Fetch full page with storage body for better RAG chunks
+                try:
+                    page = self.client.get_page_by_id(page_id, expand='body.storage,version,space')
+                    pages.append(self._format_page(page))
+                except Exception as inner_e:
+                    logger.warning(f"Failed to fetch page {page_id}: {inner_e}")
+
+            return pages
         except Exception as e:
             logger.error(f"Error searching Confluence: {str(e)}")
             return []

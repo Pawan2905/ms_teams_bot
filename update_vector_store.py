@@ -66,11 +66,19 @@ async def main():
     vector_store = VectorStore()
     
     try:
-        # Update Jira and Confluence data in parallel
-        await asyncio.gather(
-            update_jira_documents(vector_store, "YOUR_PROJECT_KEY"),  # Replace with your Jira project key
-            update_confluence_documents(vector_store, "~your_space")  # Replace with your Confluence space key
-        )
+        jira_project = settings.default_jira_project_key
+        conf_space = settings.default_confluence_space_key
+
+        tasks = []
+        if jira_project:
+            tasks.append(update_jira_documents(vector_store, jira_project, settings.refresh_days_back))
+        if conf_space:
+            tasks.append(update_confluence_documents(vector_store, conf_space))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+        else:
+            logger.warning("No default Jira project or Confluence space configured; nothing to update")
         
         elapsed = (datetime.utcnow() - start_time).total_seconds()
         logger.info(f"Vector store update completed in {elapsed:.2f} seconds")
